@@ -1,116 +1,96 @@
-// Copyright 2017 Google LLC
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 'use strict';
 
-const cors = require('cors')
 const bodyParser = require('body-parser')
-
 const express = require('express')
-const app = express()
-const port = process.env.PORT || 3010
-const upload = require('../E-ClippingP/backend/uploadConfig')
+const upload = require('./Upload/uploadConfig')
+const buck = require('./config/storageConfig')
+const client = require('./config/speechConfig')
 
+const app = express()
+app.use(bodyParser.json({ limit: '500mb' }))
 app.use(function (req, res, next) {
   res.header("Access-Control-Allow-Origin", "*"); // update to match the domain you will make the request from
   res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
   next();
 });
 
-app.get('/go', function (req, res) {
-  //res.send('hello world');
-  // const transc = await main()
-  // res.send(transc)
-  //res.status(200).json(`oie`)
-  res.send("not gets")
+// Display a form for uploading files.
+app.get('/', (req, res) => {
+  res.render('not gets');
 });
 
-app.use(bodyParser.json({ limit: '500mb' }))
-app.use('/files', express.static('public/files'))
+// Process the file upload and upload to Google Cloud Storage.
+app.post('/upload', upload.single('file'), async (req, res, next) => {
+  if (!req.file) {
+    res.status(400).send('No file uploaded.');
+    return;
+  }
+  // Create a new blob in the bucket and upload the file data.
+  const blob = buck.file(req.file.originalname);
+  const blobStream = blob.createWriteStream();
+  
+  blobStream.on('error', (err) => {
+    next(err);
+  });
 
+  blobStream.on('finish', async () => {
+    const transc = await main(`gs://${buck.name}/${blob.name}`);
+    res.status(200).send(transc);
+  });
+  
+  blobStream.end(req.file.buffer);
+});
 
-app.post('/upload', upload.single('file'), async (req, res) => {
-
-  // The name of the audio file to transcribe
-  const fileName = __dirname + '/' + req.file.path
-  //res.send("tutui 200")
-  const transc = await main(fileName)
-  res.send(transc)
-})
-
+const port = process.env.PORT || 3010
 app.listen(port, () => {
-  console.log('Backend executando... Porta ' + port)
-})
+  console.log(`App listening on port ${port}`);
+  console.log('Press Ctrl+C to quit.');
+});
 
 //[START speech_quickstart]
-async function main(fileName) {
+async function main(publicUrl) {
 
   const audioEspc = {
-    audio: { transcription: '', confidence: '', words: [] }
+    audio: { transcription: '', confidence: '' }
   }
-  // Instantiates a client. Explicitly use service account credentials by
-  // specifying the private key file. All clients in google-cloud-node have this
-  // helper, see https://github.com/GoogleCloudPlatform/google-cloud-node/blob/master/docs/authentication.md
 
-  const projectId = 'speechtogo'
-  const keyFilename = './marcelokey.json'
-  // Imports the Google Cloud client library
-  
-  const fs = require('fs');
-  const speech = require('@google-cloud/speech');
-
-  // Creates a client
-  const client = new speech.SpeechClient({ projectId, keyFilename });
-  // Reads a local audio file and converts it to base64
-  const file = fs.readFileSync(fileName);
-  const audioBytes = file.toString('base64');
   // The audio file's encoding, sample rate in hertz, and BCP-47 language code
   const audio = {
-     content: audioBytes,
+    uri: publicUrl,
   };
+
   const config = {
-    encoding: 'LINEAR16',
-    sampleRateHertz: 44100,
+    encoding: 'MP3',
+    sampleRateHertz: 16000,
     languageCode: 'pt-BR',
-    audioChannelCount: 2,
-    enableSeparateRecognitionPerChannel: false,
-    enableWordTimeOffsets: true,
+    audioChannelCount: 1,
+    enableWordTimeOffsets: false,
+    enableAutomaticPunctuation: true,
   };
+
   const request = {
     audio: audio,
     config: config,
   };
-  // Detects speech in the audio file
-  const [response] = await client.recognize(request);
+
+  // Detects speech in the audio file. This creates a recognition job that you
+  // can wait for now, or get its result later.
+  const [operation] = await client.longRunningRecognize(request);
+
+  // Get a Promise representation of the final result of the job
+  const [response] = await operation.promise();
   const transc = response.results
     .map(result => result.alternatives[0].transcript)
     .join('\n');
   const conf = response.results
     .map(result => result.alternatives[0].confidence)
     .join('\n');
-  const wordSpec = response.results
-    .map(result => result.alternatives[0].words)
-  
-  // console.log(wordSpec)
+  // const wordSpec = response.results
+  //   .map(result => result.alternatives[0].words)
+
   audioEspc.audio.transcription = transc
   audioEspc.audio.confidence = conf
-  audioEspc.audio.words = wordSpec
-  
+  //audioEspc.audio.words = wordSpec
+
   return audioEspc
-
 }
-
-// setInterval(() => {
-//   findRemoveSync( __dirname + '/public/files', {age: {seconds: 3600}, dir: "*", files: "*.*"})
-// }, 360000)
